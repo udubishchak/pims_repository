@@ -1,0 +1,38 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: pims
+      POSTGRES_USER: pims
+      POSTGRES_PASSWORD: pims
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5432:5432"
+
+  airflow:
+    image: apache/airflow:2.9.1
+    depends_on: [postgres]
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://pims:pims@postgres/pims
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+    volumes:
+      - ./dags:/opt/airflow/dags:ro
+      - ./src:/opt/airflow/src:ro
+    ports:
+      - "8080:8080"
+
+  notifier:
+    build:
+      context: .
+      dockerfile: Dockerfile.notifier
+    depends_on: [postgres]
+    ports:
+      - "8001:8000"
+
+volumes:
+  pgdata:
