@@ -57,8 +57,6 @@ pims-inventory/
 │   ├── test_newsvendor.py          # MOQ, pack_size, 3 случая newsvendor
 │   └── test_etl.py                 # smoke-тесты загрузки
 ├── docker-compose.yml              # postgres + airflow + notifier
-├── requirements.txt                # Python-зависимости
-└── LICENSE                         # MIT
 ```
 
 ---
