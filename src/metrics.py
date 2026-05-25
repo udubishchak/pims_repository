@@ -2,9 +2,9 @@
 
 Содержит:
 * базовые точечные метрики WAPE / MAE / RMSE;
-* проверку калибровки квантилей (замечание №4 руководителя);
-* чувствительность WAPE к обработке дефицитных дней (замечание №5);
-* эксперимент с прогнозной погодой (замечание №4).
+* проверку калибровки квантилей;
+* чувствительность WAPE к обработке дефицитных дней;
+* эксперимент с прогнозной погодой 
 """
 from __future__ import annotations
 
@@ -36,12 +36,7 @@ def rmse(y_true: pd.Series, y_pred: pd.Series) -> float:
 # 2. КАЛИБРОВКА КВАНТИЛЕЙ (раздел 3.3.3.4 ВКР)
 # ──────────────────────────────────────────────────────────────────────
 def quantile_coverage(y_true: pd.Series, y_pred_quantile: pd.Series) -> float:
-    """Доля наблюдений, в которых факт ≤ прогнозного квантиля.
 
-    Для правильно откалиброванной модели q90 должна давать ≈ 0.90.
-    Отклонение более ±5 п.п. означает систематическое смещение
-    страхового запаса.
-    """
     y_true = np.asarray(y_true)
     y_pred_quantile = np.asarray(y_pred_quantile)
     return float(np.mean(y_true <= y_pred_quantile))
@@ -50,7 +45,7 @@ def quantile_coverage(y_true: pd.Series, y_pred_quantile: pd.Series) -> float:
 def quantile_calibration_table(
     y_true: pd.Series, preds: dict[str, pd.Series]
 ) -> pd.DataFrame:
-    """Возвращает таблицу 3.4а ВКР: ожидаемое vs фактическое покрытие."""
+
     rows = []
     targets = {"q80": 0.80, "q90": 0.90, "q95": 0.95}
     for name, target in targets.items():
@@ -69,7 +64,7 @@ def quantile_calibration_table(
 
 
 # ──────────────────────────────────────────────────────────────────────
-# 3. ЧУВСТВИТЕЛЬНОСТЬ WAPE К ОБРАБОТКЕ ДЕФИЦИТНЫХ ДНЕЙ (зам. №5)
+# 3. ЧУВСТВИТЕЛЬНОСТЬ WAPE К ОБРАБОТКЕ ДЕФИЦИТНЫХ ДНЕЙ
 # ──────────────────────────────────────────────────────────────────────
 def wape_robustness(
     df: pd.DataFrame, y_pred_col: str = "pred_q50"
