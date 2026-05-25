@@ -1,215 +1,93 @@
--- =====================================================================
--- PIMS — схема PostgreSQL (multi-location, готова к масштабированию)
--- Приложение Б к ВКР, НИУ ВШЭ, 2026
---
--- Все таблицы фактов имеют составной первичный ключ, включающий
--- location_id, что обеспечивает корректность UPSERT при работе
--- одновременно с несколькими точками сети (см. раздел 3.7).
--- =====================================================================
+"""Глобальная конфигурация прототипа PIMS.
 
--- ---------------------------------------------------------------------
--- 1. СПРАВОЧНИКИ (без зависимостей)
--- ---------------------------------------------------------------------
+Все параметры собраны в одном модуле, чтобы изменения гиперпараметров,
+порогов или экономических констант не требовали модификации остальных
+модулей.
+"""
+from pathlib import Path
 
-CREATE TABLE IF NOT EXISTS dim_locations (
-    location_id     SERIAL PRIMARY KEY,
-    name            TEXT          NOT NULL,
-    city            TEXT          NOT NULL,
-    address         TEXT,
-    latitude        NUMERIC(9, 6) NOT NULL,
-    longitude       NUMERIC(9, 6) NOT NULL,
-    location_type   TEXT          NOT NULL
-                    CHECK (location_type IN ('mall', 'street', 'office', 'transit')),
-    open_date       DATE          NOT NULL,
-    franchisee_id   INTEGER,
-    cluster_id      INTEGER,            -- для холодного старта (раздел 2.1.3)
-    is_active       BOOLEAN       NOT NULL DEFAULT TRUE
-);
+DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "samples"
 
-CREATE TABLE IF NOT EXISTS dim_products (
-    product_id          SERIAL PRIMARY KEY,
-    name                TEXT    NOT NULL,
-    unit                TEXT    NOT NULL,
-    purchase_price      NUMERIC(10, 2),
-    sale_price          NUMERIC(10, 2),
-    abc_group           CHAR(1) CHECK (abc_group IN ('A', 'B', 'C')),
-    xyz_group           CHAR(1) CHECK (xyz_group IN ('X', 'Y', 'Z')),
-    shelf_closed_days   INTEGER NOT NULL,
-    shelf_open_days     INTEGER NOT NULL,
-    moq                 NUMERIC(10, 3) NOT NULL DEFAULT 0,
-    pack_size           NUMERIC(10, 3) NOT NULL DEFAULT 1,
-    channel             SMALLINT NOT NULL CHECK (channel IN (1, 2))
-);
+# ──────────────────────────────────────────────────────────────────────
+# 1. ПРИЗНАКИ МОДЕЛИ (23 шт., см. таблицу 3.3 ВКР)
+# ──────────────────────────────────────────────────────────────────────
+FEATURE_COLS = [
+    "lag_1", "lag_2", "lag_3", "lag_7", "lag_14", "lag_28",
+    "roll_mean_7", "roll_mean_14", "roll_std_7", "roll_std_14",
+    "temperature_c", "humidity_pct", "precipitation_mm", "is_rainy",
+    "day_of_week", "month", "week_of_year",
+    "is_weekend", "is_friday", "is_saturday",
+    "is_holiday", "is_promo", "discount_pct",
+]
+TARGET_COL = "demand_qty"
 
-CREATE TABLE IF NOT EXISTS dim_date (
-    date           DATE     PRIMARY KEY,
-    day_of_week    SMALLINT NOT NULL,
-    week_of_year   SMALLINT NOT NULL,
-    month          SMALLINT NOT NULL,
-    is_weekend     BOOLEAN  NOT NULL,
-    is_holiday     BOOLEAN  NOT NULL
-);
+# ──────────────────────────────────────────────────────────────────────
+# 2. ГИПЕРПАРАМЕТРЫ LIGHTGBM (см. раздел 3.3.2 ВКР)
+# ──────────────────────────────────────────────────────────────────────
+LGBM_PARAMS = dict(
+    n_estimators=400,
+    learning_rate=0.05,
+    max_depth=7,
+    num_leaves=31,
+    min_child_samples=20,
+    random_state=42,
+    verbosity=-1,
+)
 
--- ---------------------------------------------------------------------
--- 2. РЕЕСТР МОДЕЛЕЙ — объявляется ДО forecast_fact, чтобы FK работал
--- ---------------------------------------------------------------------
+# Квантили для построения вероятностного прогноза (см. раздел 3.4.1)
+QUANTILES = {"q50": 0.50, "q80": 0.80, "q90": 0.90, "q95": 0.95}
 
-CREATE TABLE IF NOT EXISTS model_registry (
-    model_id      SERIAL PRIMARY KEY,
-    trained_at    TIMESTAMPTZ NOT NULL,
-    train_rows    INTEGER     NOT NULL,
-    wape_valid    NUMERIC(5, 2),
-    storage_uri   TEXT        NOT NULL,
-    git_sha       TEXT        NOT NULL,
-    is_active     BOOLEAN     NOT NULL DEFAULT FALSE
-);
+# ──────────────────────────────────────────────────────────────────────
+# 3. ABC / XYZ КЛАССИФИКАЦИЯ (см. раздел 2.3 ВКР)
+# ABC выполняется по стоимости расхода (demand_qty × cost_rub).
+# Пороги совпадают с ячейкой ABC/XYZ ноутбука (раздел 3.5).
+# ──────────────────────────────────────────────────────────────────────
+ABC_THRESHOLDS = {"A": 0.80, "B": 0.95}   # верхние границы накопленной доли
+XYZ_THRESHOLDS = {"X": 0.20, "Y": 0.50}   # верхние границы CV
 
--- ---------------------------------------------------------------------
--- 3. ЗАВИСИМЫЕ СПРАВОЧНИКИ
--- ---------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────────────
+# 4. ПРАВИЛО ОБНАРУЖЕНИЯ ДЕФИЦИТНЫХ ДНЕЙ (см. раздел 2.4.4 / 3.2.2 ВКР)
+# ──────────────────────────────────────────────────────────────────────
+DEFICIT_STOCK_RATIO_THRESHOLD = 0.15
+DEFICIT_DEMAND_DROP_THRESHOLD = 0.50
 
--- Погода — отдельный ряд на каждую точку (location_id влияет на координаты)
-CREATE TABLE IF NOT EXISTS dim_weather (
-    location_id        INTEGER NOT NULL,
-    date               DATE    NOT NULL,
-    temperature_c      NUMERIC(4, 1),
-    humidity_pct       NUMERIC(4, 1),
-    precipitation_mm   NUMERIC(5, 2),
-    is_actual          BOOLEAN NOT NULL DEFAULT FALSE,    -- факт vs прогноз
-    CONSTRAINT pk_dim_weather PRIMARY KEY (location_id, date),
-    CONSTRAINT fk_dim_weather_location
-        FOREIGN KEY (location_id) REFERENCES dim_locations (location_id)
-);
+# ──────────────────────────────────────────────────────────────────────
+# 5. ЕДИНОЕ ПРАВИЛО ВЫБОРА УРОВНЯ СЕРВИСА (см. раздел 3.4.1 ВКР)
+# Базовый уровень по ABC + коррекция для скоропортящихся + newsvendor cap.
+# Полная матрица AX–CZ — см. UNIFIED_SERVICE_LEVEL_MATRIX ниже.
+# ──────────────────────────────────────────────────────────────────────
+SERVICE_LEVEL_BY_ABC = {"A": 0.95, "B": 0.90, "C": 0.80}
+PERISHABLE_SHELF_DAYS = 3              # порог короткого срока годности, дней
+PERISHABLE_QUANTILE_REDUCTION = 0.05   # 5 п.п. снижение для скоропортящихся
+NEWSVENDOR_CAP_XYZ_Z = 0.91            # newsvendor critical ratio для PIMS
 
-CREATE TABLE IF NOT EXISTS marketing_calendar (
-    event_id        SERIAL PRIMARY KEY,
-    location_id     INTEGER,                              -- NULL = сетевая акция
-    date_from       DATE     NOT NULL,
-    date_to         DATE     NOT NULL,
-    title           TEXT     NOT NULL,
-    is_promo        BOOLEAN  NOT NULL DEFAULT TRUE,
-    discount_pct    NUMERIC(4, 1) DEFAULT 0,
-    affected_products INTEGER[],
-    CONSTRAINT fk_marketing_location
-        FOREIGN KEY (location_id) REFERENCES dim_locations (location_id)
-);
+# Готовая матрица итоговых квантилей для всех 9 сочетаний ABC×XYZ
+# (см. таблицу 3.6б ВКР).
+UNIFIED_SERVICE_LEVEL_MATRIX = {
+    "AX": 0.95,  "AY": 0.90,  "AZ": 0.90,
+    "BX": 0.90,  "BY": 0.90,  "BZ": 0.90,
+    "CX": 0.80,  "CY": 0.80,  "CZ": 0.80,
+}
 
--- ---------------------------------------------------------------------
--- 4. ФАКТЫ
--- ---------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────────────
+# 6. ПАРАМЕТРЫ ЭКОНОМИЧЕСКОЙ МОДЕЛИ (см. раздел 3.6 ВКР)
+# Маржинальный коэффициент + коэффициент замещения + доля невозврата.
+# ──────────────────────────────────────────────────────────────────────
+PRICE_AVG_RUB         = 550    # средняя цена напитка
+VARIABLE_COST_PCT     = 0.55   # доля переменных затрат
+MARGIN_COEF           = 1 - VARIABLE_COST_PCT     # m = 0.45
+SUBSTITUTION_COEF     = 0.55   # s — доля гостей, выбирающих альтернативу
+LOST_GUEST_RATE       = 0.35   # r — доля невозврата лояльных гостей
 
-CREATE TABLE IF NOT EXISTS sales_fact (
-    location_id   INTEGER  NOT NULL,
-    product_id    INTEGER  NOT NULL,
-    date          DATE     NOT NULL,
-    demand_qty    NUMERIC(12, 3) NOT NULL,
-    is_deficit    BOOLEAN  NOT NULL DEFAULT FALSE,
-    is_outlier    BOOLEAN  NOT NULL DEFAULT FALSE,
-    CONSTRAINT pk_sales_fact PRIMARY KEY (location_id, product_id, date),
-    CONSTRAINT fk_sales_location FOREIGN KEY (location_id) REFERENCES dim_locations (location_id),
-    CONSTRAINT fk_sales_product  FOREIGN KEY (product_id)  REFERENCES dim_products  (product_id)
-);
+MANAGER_RATE_PER_HOUR     = 420    # ставка менеджера, руб./час
+HOURS_PER_WEEK_OPERATIONAL = 5.0   # расчётно-оформит. часть (см. раздел 1.4.2)
+HOURS_PER_WEEK_FULL_CYCLE  = 10.1  # полный цикл управления запасами
+WEEKS_PER_YEAR             = 52
+TCO_ANNUAL_RUB             = 269_000   # годовой TCO системы на 1 точке
 
-CREATE TABLE IF NOT EXISTS stock_fact (
-    location_id    INTEGER  NOT NULL,
-    product_id     INTEGER  NOT NULL,
-    date           DATE     NOT NULL,
-    stock_open     NUMERIC(12, 3) NOT NULL,
-    stock_close    NUMERIC(12, 3) NOT NULL,
-    in_transit     NUMERIC(12, 3) NOT NULL DEFAULT 0,
-    days_to_expiry SMALLINT,
-    CONSTRAINT pk_stock_fact PRIMARY KEY (location_id, product_id, date),
-    CONSTRAINT fk_stock_location FOREIGN KEY (location_id) REFERENCES dim_locations (location_id),
-    CONSTRAINT fk_stock_product  FOREIGN KEY (product_id)  REFERENCES dim_products  (product_id)
-);
-
-CREATE TABLE IF NOT EXISTS writeoffs_fact (
-    writeoff_id        BIGSERIAL PRIMARY KEY,
-    location_id        INTEGER  NOT NULL,
-    product_id         INTEGER  NOT NULL,
-    date               DATE     NOT NULL,
-    qty                NUMERIC(12, 3) NOT NULL,
-    writeoff_cost_rub  NUMERIC(12, 2) NOT NULL,
-    reason             TEXT     NOT NULL,
-    CONSTRAINT fk_writeoffs_location FOREIGN KEY (location_id) REFERENCES dim_locations (location_id),
-    CONSTRAINT fk_writeoffs_product  FOREIGN KEY (product_id)  REFERENCES dim_products  (product_id)
-);
-
-CREATE TABLE IF NOT EXISTS forecast_fact (
-    location_id INTEGER     NOT NULL,
-    product_id  INTEGER     NOT NULL,
-    date        DATE        NOT NULL,        -- день, на который сделан прогноз
-    forecast_dt TIMESTAMPTZ NOT NULL,        -- когда прогноз был сделан
-    pred_q50    NUMERIC(12, 3) NOT NULL,
-    pred_q80    NUMERIC(12, 3),
-    pred_q90    NUMERIC(12, 3),
-    pred_q95    NUMERIC(12, 3),
-    model_id    INTEGER,
-    CONSTRAINT pk_forecast_fact PRIMARY KEY (location_id, product_id, date, forecast_dt),
-    CONSTRAINT fk_forecast_location FOREIGN KEY (location_id) REFERENCES dim_locations  (location_id),
-    CONSTRAINT fk_forecast_product  FOREIGN KEY (product_id)  REFERENCES dim_products   (product_id),
-    CONSTRAINT fk_forecast_model    FOREIGN KEY (model_id)    REFERENCES model_registry (model_id)
-);
-
-CREATE TABLE IF NOT EXISTS recommendation_fact (
-    location_id     INTEGER  NOT NULL,
-    product_id      INTEGER  NOT NULL,
-    date            DATE     NOT NULL,        -- день генерации рекомендации
-    channel         SMALLINT NOT NULL,        -- 1 или 2: канал поставки
-    forecast_lt     NUMERIC(12, 3) NOT NULL,
-    safety_stock    NUMERIC(12, 3) NOT NULL,
-    stock_open      NUMERIC(12, 3) NOT NULL,
-    q_recommended   NUMERIC(12, 3) NOT NULL,
-    rationale       TEXT,
-    -- channel ВХОДИТ в PK: одна точка может в один день делать
-    -- независимые заказы по двум каналам
-    CONSTRAINT pk_recommendation_fact PRIMARY KEY (location_id, product_id, date, channel),
-    CONSTRAINT fk_recommendation_location FOREIGN KEY (location_id) REFERENCES dim_locations (location_id),
-    CONSTRAINT fk_recommendation_product  FOREIGN KEY (product_id)  REFERENCES dim_products  (product_id)
-);
-
--- ---------------------------------------------------------------------
--- 5. ЖУРНАЛЫ И МЕТРИКИ
--- ---------------------------------------------------------------------
-
-CREATE TABLE IF NOT EXISTS order_actual_log (
-    order_id      BIGSERIAL PRIMARY KEY,
-    location_id   INTEGER     NOT NULL,
-    channel       SMALLINT    NOT NULL,
-    sent_at       TIMESTAMPTZ NOT NULL,
-    manager_id    INTEGER,
-    items         JSONB       NOT NULL,        -- [{product_id, recommended, actual}]
-    CONSTRAINT fk_order_log_location FOREIGN KEY (location_id) REFERENCES dim_locations (location_id)
-);
-
-CREATE TABLE IF NOT EXISTS model_metrics (
-    location_id   INTEGER NOT NULL,
-    date          DATE    NOT NULL,
-    wape          NUMERIC(5, 2),
-    mae           NUMERIC(12, 3),
-    rmse          NUMERIC(12, 3),
-    q90_coverage  NUMERIC(4, 3),
-    CONSTRAINT pk_model_metrics PRIMARY KEY (location_id, date),
-    CONSTRAINT fk_model_metrics_location FOREIGN KEY (location_id) REFERENCES dim_locations (location_id)
-);
-
-CREATE TABLE IF NOT EXISTS feedback_log (
-    feedback_id   BIGSERIAL PRIMARY KEY,
-    location_id   INTEGER NOT NULL,
-    product_id    INTEGER NOT NULL,
-    date          DATE    NOT NULL,
-    manager_id    INTEGER,
-    delta_qty     NUMERIC(12, 3) NOT NULL,
-    comment       TEXT,
-    CONSTRAINT fk_feedback_location FOREIGN KEY (location_id) REFERENCES dim_locations (location_id),
-    CONSTRAINT fk_feedback_product  FOREIGN KEY (product_id)  REFERENCES dim_products  (product_id)
-);
-
-CREATE TABLE IF NOT EXISTS etl_log (
-    log_id      BIGSERIAL PRIMARY KEY,
-    run_at      TIMESTAMPTZ NOT NULL,
-    stage       TEXT NOT NULL,
-    status      TEXT NOT NULL CHECK (status IN ('OK', 'WARNING', 'FAIL')),
-    rows_loaded INTEGER,
-    message     TEXT
-);
+# Сценарные множители снижения потерь (раздел 3.6.2 ВКР)
+ECONOMIC_SCENARIOS = {
+    "Пессимистичный": dict(writeoffs=0.15, deficit=0.10, loyalty=0.10, labor=0.60),
+    "Базовый":        dict(writeoffs=0.30, deficit=0.45, loyalty=0.30, labor=0.50),
+    "Оптимистичный":  dict(writeoffs=0.45, deficit=0.40, loyalty=0.50, labor=0.80),
+}
