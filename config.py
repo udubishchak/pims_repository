@@ -25,7 +25,7 @@ TARGET_COL = "demand_qty"
 # 2. ГИПЕРПАРАМЕТРЫ LIGHTGBM (см. раздел 3.3.2 ВКР)
 # ──────────────────────────────────────────────────────────────────────
 LGBM_PARAMS = dict(
-    n_estimators=400,
+    n_estimators=500,
     learning_rate=0.05,
     max_depth=7,
     num_leaves=31,
@@ -73,11 +73,11 @@ UNIFIED_SERVICE_LEVEL_MATRIX = {
 # 6. ПАРАМЕТРЫ ЭКОНОМИЧЕСКОЙ МОДЕЛИ (см. раздел 3.6 ВКР)
 # Маржинальный коэффициент + коэффициент замещения + доля невозврата.
 # ──────────────────────────────────────────────────────────────────────
-PRICE_AVG_RUB         = 250    # средняя цена напитка
+PRICE_AVG_RUB         = 550    # средняя цена напитка
 VARIABLE_COST_PCT     = 0.55   # доля переменных затрат
 MARGIN_COEF           = 1 - VARIABLE_COST_PCT     # m = 0.45
 SUBSTITUTION_COEF     = 0.55   # s — доля гостей, выбирающих альтернативу
-LOST_GUEST_RATE       = 0.05   # r — доля невозврата лояльных гостей
+LOST_GUEST_RATE       = 0.35   # r — доля невозврата лояльных гостей
 
 MANAGER_RATE_PER_HOUR     = 420    # ставка менеджера, руб./час
 HOURS_PER_WEEK_OPERATIONAL = 5.0   # расчётно-оформит. часть (см. раздел 1.4.2)
@@ -88,6 +88,6 @@ TCO_ANNUAL_RUB             = 269_000   # годовой TCO системы на 
 # Сценарные множители снижения потерь (раздел 3.6.2 ВКР)
 ECONOMIC_SCENARIOS = {
     "Пессимистичный": dict(writeoffs=0.15, deficit=0.10, loyalty=0.10, labor=0.60),
-    "Базовый":        dict(writeoffs=0.30, deficit=0.25, loyalty=0.30, labor=0.70),
+    "Базовый":        dict(writeoffs=0.30, deficit=0.45, loyalty=0.30, labor=0.50),
     "Оптимистичный":  dict(writeoffs=0.45, deficit=0.40, loyalty=0.50, labor=0.80),
 }
